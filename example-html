@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Pika Network — Bubble Playground</title>
+  <style>
+    html,body { height:100%; margin:0; }
+    body {
+      background: linear-gradient(135deg, #0f172a 0%, #020617 100%);
+      color: #fff;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      overflow: hidden;
+      display:flex;
+      flex-direction:column;
+    }
+    header {
+      padding:12px 18px;
+      display:flex;
+      align-items:center;
+      gap:12px;
+      backdrop-filter: blur(6px);
+    }
+    h1 { font-size:16px; margin:0; }
+    #controls {
+      margin-left:auto;
+      display:flex;
+      gap:10px;
+      align-items:center;
+      font-size:13px;
+      opacity:0.95;
+    }
+    .control {
+      display:flex;
+      gap:6px;
+      align-items:center;
+      background: rgba(255,255,255,0.03);
+      padding:6px 8px;
+      border-radius:10px;
+      border:1px solid rgba(255,255,255,0.04);
+    }
+
+    canvas { display:block; width:100%; height:100%; flex:1; cursor:crosshair; }
+
+    footer {
+      font-size:12px;
+      padding:8px 12px;
+      text-align:center;
+      opacity:0.9;
+      background: linear-gradient(0deg, rgba(255,255,255,0.02), transparent);
+    }
+
+    /* small responsive */
+    @media (max-width:520px){
+      header { padding:10px; }
+      h1 { font-size:14px; }
+      #controls { gap:6px; font-size:12px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <svg width="34" height="34" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="12" r="10" fill="#ffde59"/>
+      <circle cx="8" cy="10" r="2" fill="#fff"/>
+      <circle cx="16" cy="10" r="2" fill="#fff"/>
+    </svg>
+    <h1>Pika Network — Bubble Playground</h1>
+
+    <div id="controls">
+      <div class="control">
+        <label for="count">Bubbles</label>
+        <input id="count" type="range" min="6" max="80" value="28" />
+      </div>
+      <div class="control">
+        <label for="repel">Repel</label>
+        <input id="repel" type="range" min="0" max="2" step="0.01" value="0.55" />
+      </div>
+      <div class="control">
+        <label for="speed">Speed</label>
+        <input id="speed" type="range" min="0.1" max="3" step="0.05" value="1" />
+      </div>
+    </div>
+  </header>
+
+  <canvas id="c"></canvas>
+
+  <footer>Move your mouse — bubbles gently move away, pulse, and keep returning. Bright colors only ✨</footer>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha: true });
+  let W = canvas.width = innerWidth;
+  let H = canvas.height = innerHeight - (document.querySelector('header').offsetHeight + document.querySelector('footer').offsetHeight);
+
+  // Reflow canvas height on resize (keeps header/footer visible)
+  function resize() {
+    W = canvas.width = innerWidth;
+    H = canvas.height = innerHeight - (document.querySelector('header').offsetHeight + document.querySelector('footer').offsetHeight);
+  }
+  addEventListener('resize', resize);
+
+  // Controls
+  const countInput = document.getElementById('count');
+  const repelInput = document.getElementById('repel');
+  const speedInput = document.getElementById('speed');
+
+  let bubbleCount = Number(countInput.value);
+  let globalRepel = Number(repelInput.value); // tweak repulsion strength
+  let globalSpeed = Number(speedInput.value); // overall speed multiplier
+
+  countInput.addEventListener('input', () => {
+    bubbleCount = Number(countInput.value);
+    adjustBubbleCount();
+  });
+  repelInput.addEventListener('input', () => globalRepel = Number(repelInput.value));
+  speedInput.addEventListener('input', () => globalSpeed = Number(speedInput.value));
+
+  // mouse / touch tracking
+  const mouse = { x: null, y: null, active: false };
+  window.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = e.clientX - rect.left;
+    mouse.y = e.clientY - rect.top;
+    mouse.active = true;
+  });
+  window.addEventListener('pointerdown', (e) => { mouse.active = true; });
+  window.addEventListener('pointerup', (e) => { /* keep last pos */ });
+
+  // When mouse leaves window, clear active (so bubbles don't chase forever)
+  window.addEventListener('mouseleave', () => { mouse.active = false; });
+  window.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = t.clientX - rect.left;
+    mouse.y = t.clientY - rect.top;
+    mouse.active = true;
+  }, { passive: true });
+  window.addEventListener('touchmove', (e) => {
+    const t = e.touches[0];
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = t.clientX - rect.left;
+    mouse.y = t.clientY - rect.top;
+  }, { passive: true });
+
+  // Utility: random bright HSL color
+  function randomBrightHue() {
+    return Math.floor(Math.random() * 360);
+  }
+
+  // Bubble class
+  class Bubble {
+    constructor() {
+      this.reset(true);
+    }
+
+    reset(initial=false) {
+      // position: favor canvas center area for nicer look
+      const cx = W/2 + (Math.random()*W - W/2) * 0.6;
+      const cy = H/2 + (Math.random()*H - H/2) * 0.6;
+      this.x = initial ? cx : Math.random() * W;
+      this.y = initial ? cy : Math.random() * H;
+
+      // velocity
+      const angle = Math.random() * Math.PI * 2;
+      this.vx = Math.cos(angle) * (0.2 + Math.random()*0.6);
+      this.vy = Math.sin(angle) * (0.2 + Math.random()*0.6);
+
+      this.baseRadius = 10 + Math.random()*36;          // base size
+      this.radius = this.baseRadius;
+      this.pulseOffset = Math.random() * Math.PI * 2;   // to desync pulses
+      this.hue = randomBrightHue();                     // initial hue
+      this.hueSpeed = (0.2 + Math.random()*0.8) * (Math.random() < 0.5 ? -1 : 1); // slow hue drift
+      this.saturation = 88 + Math.random()*8;           // bright
+      this.lightness = 50 + Math.random()*6;
+      this.maxSpeed = 2.2 + Math.random()*2.5;          // limit
+      this.friction = 0.985;                            // friction (slows over time)
+      this.returning = false;                           // used when bubble left far away
+    }
+
+    applyForce(fx, fy) {
+      this.vx += fx;
+      this.vy += fy;
+      const spd = Math.hypot(this.vx, this.vy);
+      if (spd > this.maxSpeed * globalSpeed) {
+        const s = (this.maxSpeed * globalSpeed) / spd;
+        this.vx *= s;
+        this.vy *= s;
+      }
+    }
+
+    update(dt, t) {
+      // Pulsate radius
+      const pulse = 0.12 + 0.08 * Math.sin(t*2 + this.pulseOffset);
+      this.radius = Math.max(4, this.baseRadius * (1 + pulse));
+
+      // Slight hue shift
+      this.hue += this.hueSpeed * 0.02 * dt;
+      if (this.hue < 0) this.hue += 360;
+      if (this.hue >= 360) this.hue -= 360;
+
+      // Mouse repulsion
+      if (mouse.active && mouse.x !== null && mouse.y !== null) {
+        const dx = this.x - mouse.x;
+        const dy = this.y - mouse.y;
+        const dist2 = dx*dx + dy*dy;
+        const dist = Math.sqrt(dist2) + 0.0001;
+        const minDist = Math.max(80, this.radius * 1.8); // minimum safe distance
+        if (dist < 450) {
+          // repulsion falls off with distance^2, scaled by bubble size
+          const strength = (globalRepel * 1800) / (dist2 + 1000);
+          // reduce effect if very close to avoid snapping
+          const fx = (dx / dist) * strength * (this.radius / 28);
+          const fy = (dy / dist) * strength * (this.radius / 28);
+          this.applyForce(fx * dt, fy * dt);
+        }
+      }
+
+      // gentle random movement (so they don't get stuck)
+      const wander = 0.05;
+      this.applyForce((Math.random()-0.5)*wander*dt, (Math.random()-0.5)*wander*dt);
+
+      // friction and integrate
+      this.vx *= this.friction;
+      this.vy *= this.friction;
+      this.x += this.vx * dt * globalSpeed;
+      this.y += this.vy * dt * globalSpeed;
+
+      // keep on-screen — if partially off-screen too long, pull back to center smoothly
+      const margin = 30;
+      if (this.x < -this.radius - 300 || this.x > W + this.radius + 300 || this.y < -this.radius - 300 || this.y > H + this.radius + 300) {
+        // Teleport back near center if extremely far (safety)
+        this.x = W/2 + (Math.random()-0.5) * Math.min(W/3, 300);
+        this.y = H/2 + (Math.random()-0.5) * Math.min(H/3, 200);
+        this.vx *= 0.2; this.vy *= 0.2;
+      } else {
+        // If slightly off edges, apply small force inward to bring them back gently
+        const edgeForce = 0.02 * (this.baseRadius / 24);
+        if (this.x < margin) this.applyForce(edgeForce * dt * (margin - this.x), 0);
+        if (this.x > W - margin) this.applyForce(-edgeForce * dt * (this.x - (W - margin)), 0);
+        if (this.y < margin) this.applyForce(0, edgeForce * dt * (margin - this.y));
+        if (this.y > H - margin) this.applyForce(0, -edgeForce * dt * (this.y - (H - margin)));
+      }
+    }
+
+    draw(ctx) {
+      // create a soft radial gradient
+      const g = ctx.createRadialGradient(this.x, this.y, Math.max(1, this.radius*0.12), this.x, this.y, this.radius*1.6);
+      const color = `hsl(${this.hue.toFixed(1)}, ${this.saturation}%, ${this.lightness}%)`;
+      g.addColorStop(0, color);
+      g.addColorStop(0.45, color);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+
+      ctx.beginPath();
+      ctx.fillStyle = g;
+      ctx.arc(this.x, this.y, this.radius, 0, Math.PI*2);
+      ctx.fill();
+
+      // soft glossy rim
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(255,255,255,0.06)`;
+      ctx.lineWidth = Math.max(1, this.radius * 0.06);
+      ctx.arc(this.x - this.radius*0.22, this.y - this.radius*0.22, this.radius*0.9, 0, Math.PI*2);
+      ctx.stroke();
+    }
+  }
+
+  // create bubbles
+  let bubbles = [];
+  function makeBubbles(n) {
+    bubbles = [];
+    for (let i=0;i<n;i++) bubbles.push(new Bubble());
+  }
+  makeBubbles(bubbleCount);
+
+  // adapt bubble count without full reload
+  function adjustBubbleCount() {
+    const n = bubbleCount;
+    if (n > bubbles.length) {
+      for (let i=0;i<n-bubbles.length;i++) bubbles.push(new Bubble());
+    } else if (n < bubbles.length) {
+      bubbles.splice(n);
+    }
+  }
+
+  // animation loop
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(48, now - last) / 16.6667; // normalize dt to ~60fps steps (dt ~1)
+    last = now;
+
+    // clear with subtle fade for nice trails
+    ctx.clearRect(0,0,W,H);
+
+    // draw faint background gradient dot-field (very subtle)
+    // (commented out because we're using canvas background)
+    // update and draw bubbles
+    for (let b of bubbles) {
+      b.update(dt, now/1000);
+      b.draw(ctx);
+    }
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // initial guidance pulse animation (tiny pop)
+  (function introPulse() {
+    const t0 = performance.now();
+    const dur = 800;
+    function p(now){
+      const p = Math.min(1, (now - t0) / dur);
+      // small center bloom
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.beginPath();
+      const r = 40 + p * 200;
+      const grad = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, r);
+      grad.addColorStop(0, `rgba(255,255,255,${0.06*(1-p)})`);
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0,0,W,H);
+      ctx.restore();
+      if (p < 1) requestAnimationFrame(p);
+    }
+    requestAnimationFrame(p);
+  })();
+
+  // ensure canvas size correct after fonts/DOM measured
+  setTimeout(resize, 120);
+
+  // helpful: pause when tab hidden to save CPU
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      // slow all bubbles down
+      for (const b of bubbles) { b.vx *= 0.2; b.vy *= 0.2; }
+    }
+  });
+
+  // initial hint: keep pointer tracked even if user hasn't moved yet
+  // (small nudge center)
+  window.addEventListener('load', () => {
+    // nothing required
+  });
+
+  // Prevent accidental drag selection on mobile when tapping canvas
+  canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive:false });
+
+})();
+</script>
+</body>
+</html>
